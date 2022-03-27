@@ -166,7 +166,7 @@ export class Cafetch {
   #state = "idle";
   #executors = new Map();
 
-  makeRequest(endpointKey: string, options: CafetchOptions) {
+  request(endpointKey: string, options: CafetchOptions) {
     const endpoint = this.#endpoint[endpointKey];
     if (!endpoint) {
       throw new Error(`No executor config found for key ${endpointKey}`);
@@ -234,9 +234,7 @@ export class Cafetch {
 
   execRequest = () => {
     if (this.#state === "running") {
-      setTimeout(() => {
-        if (this.#queue) this.scheduleRequest();
-      }, 100);
+      if (this.#queue) this.scheduleRequest();
       return;
     };
 
@@ -282,5 +280,5 @@ export class Cafetch {
 }
 
 export const init = (options: CafetchInit) => globalState.instance = new Cafetch(options);
-export const request = (url: string, options: CafetchOptions) => globalState.instance && globalState.instance.makeRequest(url, options);
+export const request = (url: string, options: CafetchOptions) => globalState.instance && globalState.instance.request(url, options);
 export const getInstance = () => globalState.instance;
