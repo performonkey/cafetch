@@ -1,0 +1,24 @@
+{
+  "name": "cafetch",
+  "version": "0.0.1",
+  "description": "fetch with cache",
+  "main": "dist/okapi.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/performonkey/cafetch.git"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [
+    "fetch",
+    "stale-while-revalidate",
+    "cache",
+    "deduplicate"
+  ],
+  "author": "p10y",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^4.6.3"
+  }
+}
