@@ -1,3 +1,4 @@
+//#region types
 type FetchPolicy = 'network-only' | 'cache-first' | 'cache-only' | 'cache-and-network';
 type Request = () => Promise<any>;
 type PostSend = (response: CafetchResponse) => any;
@@ -10,7 +11,7 @@ interface CafetchResponse {
   readonly statusText: string;
   readonly type: ResponseType;
   readonly url: string;
-  readonly body: ReadableStream<Uint8Array> | { [k: string]: any } | string | null;
+  body: ReadableStream<Uint8Array> | { [k: string]: any } | string | null;
 }
 
 interface CafetchRequestOptions extends  Omit<RequestInit, 'body'> {
@@ -21,28 +22,40 @@ interface CafetchRequestOptions extends  Omit<RequestInit, 'body'> {
 interface CafetchOptions extends CafetchRequestOptions {
   postSend?: (response: CafetchResponse) => Promise<CafetchResponse>;
   preSend?: (options: CafetchRequestOptions) => CafetchRequestOptions;
-  cacheKey?: string;
+  key?: string;
   fetchPolicy: FetchPolicy;
 }
 
 interface CafetchQueue {
-  cacheKey: string;
-  endpointKey: string;
+  key: string;
   executor: Exector;
   ts: number;
 }
-
-interface Endpoint extends CafetchOptions {
-  url: string | ((options: CafetchOptions) => string);
-}
-
-interface CafetchInit {
-  endpoint: { [k: string]: Endpoint }
-}
+//#endregion
 
 const globalState: { instance?: Cafetch } = {
   instance: undefined,
 };
+
+class CafetchError extends Error {
+  headers?: Headers;
+  ok?: boolean;
+  redirected?: boolean;
+  status?: number;
+  statusText?: string;
+  type?: ResponseType;
+  url?: string;
+  body?: ReadableStream<Uint8Array> | { [k: string]: any } | string | null;
+  cause?: Error
+
+  constructor(message: string, addition: { cause?: Error, [k: string]: any }) {
+    super(message);
+    this.name = 'CafetchError';
+    this.message = message;
+    Object.assign(this, addition);
+    // Error.captureStackTrace(this, this.constructor);
+  }
+}
 
 function cfetch(url: string, options: CafetchRequestOptions): Promise<CafetchResponse> {
   let body = options.body;
@@ -75,22 +88,40 @@ function cfetch(url: string, options: CafetchRequestOptions): Promise<CafetchRes
 
   let fetchBody = body as BodyInit | null | undefined;
   return fetch(url, { ...options, headers, body: fetchBody })
-    .then((response) => {
-      const { headers, ok, redirected, statusText, type, url } = response;
-      const passBody = (body: ({ [k: string]: any } | string)) => ({ headers, body, ok, redirected, statusText, type, url } as CafetchResponse);
+    .then(async (response) => {
+      const { headers, ok, redirected, status, statusText, type, url } = response;
+      const ret: CafetchResponse = { headers, ok, redirected, status, statusText, type, url, body: null };
+
       const contentType = headers.get('content-type');
-      if (!contentType) return response;
-      if (contentType.includes('application/json')) {
-        return response.json().then(passBody);
-      } else if (contentType.includes('text')) {
-        return response.text().then(passBody);
+      try {
+        if (contentType && contentType.includes('application/json')) {
+          ret.body = await response.json();
+        } else if (contentType && contentType.includes('text')) {
+          ret.body = await response.text();
+        }
+      } catch (error) {
+        throw new CafetchError('parse response body faild', { ...ret, cause: error as Error });
       }
-      return response;
+
+      if (!ok) {
+        let message;
+        if (contentType && contentType.includes('application/json')) {
+          const body = ret.body as { [k: string]: any };
+          message = body.message || body.msg;
+        } else if (contentType && contentType.includes('text')) {
+          message = ret.body;
+        } else {
+          message = `fetch failed: statusText`;
+        }
+        throw new CafetchError(message, ret);
+      }
+
+      return ret;
     });
 }
-export { cfetch as fetch };
 
 class Exector {
+  key: string;
   fetchPolicy = 'network-only';
   dataChannel: ((response: CafetchResponse) => any)[] = [];
   errorChannel: ((error: Error) => any)[] = [];
@@ -103,10 +134,12 @@ class Exector {
   postSend: PostSend = (x) => x;
 
   constructor({
+    key,
     request,
     postSend,
     fetchPolicy = 'network-only',
-  }: { request: Request, postSend: PostSend, fetchPolicy: FetchPolicy }) {
+  }: { key: string, request: Request, postSend: PostSend, fetchPolicy: FetchPolicy }) {
+    this.key = key;
     this.request = request;
     this.fetchPolicy = fetchPolicy;
     this.postSend = postSend;
@@ -151,50 +184,39 @@ class Exector {
   }
 }
 
-export class Cafetch {
+class Cafetch {
   lastReqTime = 0;
 
-  constructor({ endpoint }: CafetchInit) {
-    this.#endpoint = endpoint;
+  constructor() {
     globalState.instance = this;
   }
 
   #fetch = cfetch;
-  #endpoint: { [k: string]: Endpoint } = {};
   #queue: CafetchQueue[] = [];
   #ricId = -1;
   #state = "idle";
   #executors = new Map();
 
-  request(endpointKey: string, options: CafetchOptions) {
-    const endpoint = this.#endpoint[endpointKey];
-    if (!endpoint) {
-      throw new Error(`No executor config found for key ${endpointKey}`);
-    }
-
-    const url = typeof endpoint.url === 'function' ? endpoint.url(options) : endpoint.url;
-    const method = (endpoint.method || 'GET').toUpperCase();
-    const headers = Object.assign({}, endpoint.headers || {} , options.headers || {});
-    const body = endpoint.body || options.body;
+  request(url: string, options: CafetchOptions): Exector {
+    const method = (options.method || 'GET').toUpperCase();
     let {
       postSend = x => x,
       preSend = x => x,
-      cacheKey = endpoint.cacheKey,
-      fetchPolicy = endpoint.fetchPolicy,
+      key,
+      fetchPolicy,
       ...fetchOptions
     } = options;
     // cache-first | cache-only | cache-and-network | network-only
     if (!fetchPolicy) {
-      fetchPolicy = method.toUpperCase() === 'GET'
-        ? 'cache-first'
-        : "network-only";
+      fetchPolicy = method === 'GET' ? 'cache-first' : "network-only";
     }
-    if (!cacheKey) cacheKey = [url, method, fetchPolicy === 'network-only'].join('\x01');
+    if (!key) key = [url, method, fetchPolicy === 'network-only'].join('\x01');
 
-    fetchOptions = { ...fetchOptions, method, headers, body };
-    let executor = this.#executors.get(cacheKey);
+    fetchOptions = { ...fetchOptions, method };
+    let executor = this.#executors.get(key);
     if (!executor) {
       executor = new Exector({
+        key,
         fetchPolicy,
         postSend,
         request: () => {
@@ -202,8 +224,8 @@ export class Cafetch {
           return this.#fetch(url, options);
         },
       });
-      executor.refetch = this.refetchBuilder(cacheKey, endpointKey, executor);
-      this.#executors.set(cacheKey, executor);
+      executor.refetch = this.refetchBuilder(key, executor);
+      this.#executors.set(key, executor);
     }
 
     if (method !== 'GET') {
@@ -220,8 +242,7 @@ export class Cafetch {
       case 'network-only':
       case 'cache-and-network':
         this.#queue.push({
-          cacheKey,
-          endpointKey,
+          key,
           executor,
           ts: Date.now(),
         });
@@ -250,9 +271,9 @@ export class Cafetch {
       }
     }
     const sendedReqIds: { [k: string]: boolean } = {};
-    for (const { cacheKey, executor } of this.#queue.splice(0, index + 1)) {
-      if (sendedReqIds[cacheKey]) continue;  // already send
-      sendedReqIds[cacheKey] = true;
+    for (const { key, executor } of this.#queue.splice(0, index + 1)) {
+      if (sendedReqIds[key]) continue;  // already send
+      sendedReqIds[key] = true;
       executor.send();
     }
 
@@ -266,11 +287,10 @@ export class Cafetch {
     this.#ricId = requestIdleCallback(this.execRequest);
   }
 
-  refetchBuilder(cacheKey: string, endpointKey: string, executor: Exector) {
+  refetchBuilder(key: string, executor: Exector) {
     return () => {
       this.#queue.push({
-        cacheKey,
-        endpointKey,
+        key,
         executor,
         ts: Date.now(),
       });
@@ -279,6 +299,16 @@ export class Cafetch {
   }
 }
 
-export const init = (options: CafetchInit) => globalState.instance = new Cafetch(options);
-export const request = (url: string, options: CafetchOptions) => globalState.instance && globalState.instance.request(url, options);
+globalState.instance = new Cafetch();
+
+function request(url: string, options: CafetchOptions) {
+  if (globalState.instance) return globalState.instance.request(url, options);
+}
+
+export default request;
+export {
+  Cafetch,
+  request,
+  cfetch as fetch
+};
 export const getInstance = () => globalState.instance;

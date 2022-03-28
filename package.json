@@ -2,7 +2,7 @@
   "name": "cafetch",
   "version": "0.0.1",
   "description": "fetch with cache",
-  "main": "dist/okapi.js",
+  "main": "dist/cafetech.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/performonkey/cafetch.git"
