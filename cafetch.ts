@@ -37,7 +37,7 @@ interface CafetchQueue {
 }
 
 interface Endpoint extends CafetchOptions {
-  endpointKey: string;
+  endpoint: string;
   url: string;
 }
 //#endregion
@@ -328,12 +328,12 @@ class Cafetch {
 
 globalState.instance = new Cafetch();
 
-function registerEndpoint(endpoint: Endpoint | Endpoint[]) {
-  if (!Array.isArray(endpoint)) {
-    globalState.endpoint[endpoint.endpointKey] = endpoint;
+function registerEndpoint(endpointConfig: Endpoint | Endpoint[]) {
+  if (!Array.isArray(endpointConfig)) {
+    globalState.endpoint[endpointConfig.endpoint] = endpointConfig;
   } else {
-    endpoint.forEach((item) => {
-      globalState.endpoint[item.endpointKey] = item;
+    endpointConfig.forEach((item) => {
+      globalState.endpoint[item.endpoint] = item;
     });
   }
   return globalState.endpoint;
@@ -351,14 +351,14 @@ function request(url: string | Endpoint, options?: CafetchOptions) {
   }
 
   let requestOptions = url;
-  const endpointKey = requestOptions.endpointKey;
-  if (!endpointKey) {
+  const key = requestOptions.endpoint;
+  if (!key) {
     throw new Error('request must have endpoint field');
   }
 
-  const endpoint = globalState.endpoint[endpointKey];
+  const endpoint = globalState.endpoint[key];
   if (!endpoint) {
-    throw new Error(`not have endpoint ${endpointKey}`);
+    throw new Error(`not have endpoint ${key}`);
   }
 
   return globalState.instance.request(requestOptions.url || endpoint.url, { ...endpoint, ...requestOptions } as CafetchOptions);

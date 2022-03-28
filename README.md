@@ -5,7 +5,7 @@ import { registerEndpoint, request } from 'cafetch';
 
 // register endpoint config
 registerEndpoint({
-  endpointKey: 'endpoint1',
+  endpoint: 'endpoint1',
   fetchPolicy: 'cache-first',
   url: 'https://api.github.com/',
   method: 'GET',
@@ -13,7 +13,7 @@ registerEndpoint({
 });
 registerEndpoint([
   {
-    endpointKey: 'endpoint2',
+    endpoint: 'endpoint2',
     fetchPolicy: 'network-only',
     url: 'https://api.github.com/',
     method: 'POST',
@@ -22,11 +22,11 @@ registerEndpoint([
 ]);
 
 // request endpoint
-request({ endpointKey: 'endpoint1', url: 'https://api.github.com/' })
+request({ endpoint: 'endpoint1', url: 'https://api.github.com/' })
   .on('data', (response) => console.log(1, response))
   .on('error', (error) => console.log(1, error))
 ;
-request({ endpointKey: 'endpoint2', body: { id: '123' } })
+request({ endpoint: 'endpoint2', body: { id: '123' } })
   .on('data', (response) => console.log(2, response))
   .on('error', (error) => console.log(2, error))
 ;
