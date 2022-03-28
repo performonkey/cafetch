@@ -2,6 +2,9 @@
 type FetchPolicy = 'network-only' | 'cache-first' | 'cache-only' | 'cache-and-network';
 type Request = () => Promise<any>;
 type PostSend = (response: CafetchResponse) => any;
+type ExectorEvent = 'data' | 'error';
+type PreFn = (options: CafetchRequestOptions) => any;
+type PostFn = (response: CafetchResponse) => CafetchResponse;
 
 interface CafetchResponse {
   readonly headers: Headers;
@@ -20,10 +23,11 @@ interface CafetchRequestOptions extends  Omit<RequestInit, 'body'> {
 }
 
 interface CafetchOptions extends CafetchRequestOptions {
-  postSend?: (response: CafetchResponse) => Promise<CafetchResponse>;
-  preSend?: (options: CafetchRequestOptions) => CafetchRequestOptions;
   key?: string;
-  fetchPolicy: FetchPolicy;
+  endpoint?: string;
+  fetchPolicy?: FetchPolicy;
+  postSend?: PostFn;
+  preSend?: PreFn;
 }
 
 interface CafetchQueue {
@@ -31,10 +35,16 @@ interface CafetchQueue {
   executor: Exector;
   ts: number;
 }
+
+interface Endpoint extends CafetchOptions {
+  endpointKey: string;
+  url: string;
+}
 //#endregion
 
-const globalState: { instance?: Cafetch } = {
+const globalState: { instance?: Cafetch, endpoint: { [k: string]: Endpoint } } = {
   instance: undefined,
+  endpoint: {},
 };
 
 class CafetchError extends Error {
@@ -57,7 +67,7 @@ class CafetchError extends Error {
   }
 }
 
-function cfetch(url: string, options: CafetchRequestOptions): Promise<CafetchResponse> {
+function customFetch(url: string, options: CafetchRequestOptions): Promise<CafetchResponse> {
   let body = options.body;
   let headers = new Headers(options.headers);
   switch (Object.prototype.toString.call(body)) {
@@ -123,8 +133,13 @@ function cfetch(url: string, options: CafetchRequestOptions): Promise<CafetchRes
 class Exector {
   key: string;
   fetchPolicy = 'network-only';
-  dataChannel: ((response: CafetchResponse) => any)[] = [];
-  errorChannel: ((error: Error) => any)[] = [];
+  channel: {
+    data: ((response: CafetchResponse) => any)[],
+    error: ((error: Error) => any)[]
+  } = {
+    data: [],
+    error: [],
+  };
   request: Request;
   response?: CafetchResponse;
   error = null;
@@ -145,21 +160,21 @@ class Exector {
     this.postSend = postSend;
   }
 
-  on = (event: string, cb: (arg: CafetchResponse | Error) => any) => {
+  on = (event: ExectorEvent, cb: (arg: CafetchResponse | Error) => any) => {
     if (event === "data" ) {
       if (this.response && this.fetchPolicy !== 'network-only') {
         cb(this.response);
       }
-      this.dataChannel.push(cb);
+      this.channel.data.push(cb);
     } else {
-      this.errorChannel.push(cb);
+      this.channel.error.push(cb);
     }
 
     return this;
   }
 
-  off = (event: string, cb: () => any) => {
-    const channel = this[event === 'data' ? 'dataChannel' : 'errorChannel'];
+  off = (event: ExectorEvent, cb: () => any) => {
+    const channel = this.channel[event];
     channel.splice(channel.indexOf(cb), 1);
     return this;
   }
@@ -170,13 +185,13 @@ class Exector {
 
     this.request()
       .then((response: CafetchResponse) => {
-        this.response = this.postSend(response);
-        this.dataChannel.forEach((cb) => cb(response));
+        this.response = this.postSend(response) || response;
+        this.channel.data.forEach((cb) => cb(response));
         this.ts = Date.now();
       })
       .catch((error) => {
         this.error = error;
-        this.errorChannel.forEach((cb) => cb(error));
+        this.channel.error.forEach((cb) => cb(error));
       })
       .finally(() => {
         this.state = 'idle';
@@ -191,21 +206,28 @@ class Cafetch {
     globalState.instance = this;
   }
 
-  #fetch = cfetch;
+  #fetch = customFetch;
   #queue: CafetchQueue[] = [];
   #ricId = -1;
   #state = "idle";
   #executors = new Map();
+  #pre: PreFn[] = [];
+  #post: PostFn[] = [];
 
-  request(url: string, options: CafetchOptions): Exector {
-    const method = (options.method || 'GET').toUpperCase();
+  ext(part: 'pre' | 'post', cb: PreFn | PostFn) {
+    if (part === 'pre') this.#pre.push(cb as PreFn);
+    else this.#post.push(cb as PostFn);
+  }
+
+  request(url: string, options?: CafetchOptions): Exector {
+    const method = (options?.method || 'GET').toUpperCase();
     let {
-      postSend = x => x,
-      preSend = x => x,
+      postSend,
+      preSend,
       key,
       fetchPolicy,
       ...fetchOptions
-    } = options;
+    } = (options || {});
     // cache-first | cache-only | cache-and-network | network-only
     if (!fetchPolicy) {
       fetchPolicy = method === 'GET' ? 'cache-first' : "network-only";
@@ -218,22 +240,16 @@ class Cafetch {
       executor = new Exector({
         key,
         fetchPolicy,
-        postSend,
-        request: () => {
-          let options = preSend(fetchOptions);
-          return this.#fetch(url, options);
-        },
+        postSend: this.postHandleBuilder(postSend),
+        request: this.fetchBuilder(url, fetchOptions as CafetchRequestOptions, preSend),
       });
       executor.refetch = this.refetchBuilder(key, executor);
       this.#executors.set(key, executor);
     }
 
     if (method !== 'GET') {
-      executor.postSend = postSend;
-      executor.request = () => {
-        let options = preSend(fetchOptions);
-        return this.#fetch(url, options);
-      };
+      executor.postSend = this.postHandleBuilder(postSend);
+      executor.request = this.fetchBuilder(url, fetchOptions as CafetchRequestOptions, preSend);
     }
 
     switch (fetchPolicy) {
@@ -297,18 +313,63 @@ class Cafetch {
       this.scheduleRequest();
     };
   }
+
+  fetchBuilder = (url: string, options: CafetchRequestOptions, preSend?: PreFn) => {
+    let fetchOptions = this.#pre.concat(preSend || []).reduce((fetchOptions, fn) => fn(fetchOptions) || options, options);
+    return () => this.#fetch(url, fetchOptions);
+  }
+
+  postHandleBuilder = (post?: PostFn) => {
+    return (response: CafetchResponse) => {
+      this.#post.concat(post || []).reduce((response, fn) => fn(response) || response, response)
+    }
+  }
 }
 
 globalState.instance = new Cafetch();
 
-function request(url: string, options: CafetchOptions) {
-  if (globalState.instance) return globalState.instance.request(url, options);
+function registerEndpoint(endpoint: Endpoint | Endpoint[]) {
+  if (!Array.isArray(endpoint)) {
+    globalState.endpoint[endpoint.endpointKey] = endpoint;
+  } else {
+    endpoint.forEach((item) => {
+      globalState.endpoint[item.endpointKey] = item;
+    });
+  }
+  return globalState.endpoint;
+}
+
+function ext(part: 'pre' | 'post', cb: PreFn | PostFn) {
+  globalState?.instance?.ext(part, cb);
+}
+
+function request(url: string | Endpoint, options?: CafetchOptions) {
+  if (!globalState.instance) return null;
+
+  if (typeof url === 'string') {
+    return globalState.instance.request(url, options);
+  }
+
+  let requestOptions = url;
+  const endpointKey = requestOptions.endpointKey;
+  if (!endpointKey) {
+    throw new Error('request must have endpoint field');
+  }
+
+  const endpoint = globalState.endpoint[endpointKey];
+  if (!endpoint) {
+    throw new Error(`not have endpoint ${endpointKey}`);
+  }
+
+  return globalState.instance.request(requestOptions.url || endpoint.url, { ...endpoint, ...requestOptions } as CafetchOptions);
 }
 
 export default request;
 export {
+  ext,
   Cafetch,
   request,
-  cfetch as fetch
+  registerEndpoint,
+  customFetch as fetch
 };
 export const getInstance = () => globalState.instance;
