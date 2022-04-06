@@ -1,10 +1,15 @@
 //#region types
 type FetchPolicy = 'network-only' | 'cache-first' | 'cache-only' | 'cache-and-network';
 type Request = () => Promise<any>;
-type PostSend = (response: CafetchResponse) => any;
+type PostSend = (response: CafetchResponse) => Promise<CafetchResponse>;
 type ExectorEvent = 'data' | 'error';
-type PreFn = (options: CafetchRequestOptions) => any;
-type PostFn = (response: CafetchResponse) => CafetchResponse;
+type PreFn = (options: CafetchRequestOptions) => Promise<CafetchRequestOptions> | CafetchRequestOptions;
+type PostFn = (response: CafetchResponse) => Promise<CafetchResponse> | CafetchResponse;
+type Validator = {
+  validate: (value: any, options?: { [k: string]: any }) => boolean,
+  validateSync?: (value: any, options?: { [k: string]: any }) => boolean,
+  [k: string]: any
+};
 
 interface CafetchResponse {
   readonly headers: Headers;
@@ -22,12 +27,18 @@ interface CafetchRequestOptions extends  Omit<RequestInit, 'body'> {
   body?: ReadableStream | Blob | BufferSource | FormData | URLSearchParams | string | { [k: string]: any } | null;
 }
 
+interface Validate {
+  body: Validator,
+  response: Validator,
+}
+
 interface CafetchOptions extends CafetchRequestOptions {
   key?: string;
   endpoint?: string;
   fetchPolicy?: FetchPolicy;
-  postSend?: PostFn;
-  preSend?: PreFn;
+  post?: PostFn;
+  pre?: PreFn;
+  validate?: Validate;
 }
 
 interface CafetchQueue {
@@ -42,9 +53,21 @@ interface Endpoint extends CafetchOptions {
 }
 //#endregion
 
-const globalState: { instance?: Cafetch, endpoint: { [k: string]: Endpoint } } = {
+if (typeof requestIdleCallback === 'undefined') {
+  globalThis.requestIdleCallback = (fn) => setTimeout(fn, 4);
+  globalThis.cancelIdleCallback = (fn) => clearTimeout(fn);
+}
+
+const globalState: {
+  instance?: Cafetch,
+  endpoint: { [k: string]: Endpoint },
+  pre: PreFn[],
+  post: PostFn[],
+} = {
   instance: undefined,
   endpoint: {},
+  pre: [],
+  post: [],
 };
 
 class CafetchError extends Error {
@@ -146,7 +169,7 @@ class Exector {
   state = 'idle'; // running | idle | success | error
   ts = 0;
   refetch = () => {};
-  postSend: PostSend = (x) => x;
+  postSend: PostSend = (x: CafetchResponse) => Promise.resolve(x);
 
   constructor({
     key,
@@ -184,8 +207,9 @@ class Exector {
     this.state = 'running';
 
     this.request()
+      .then(response => this.postSend(response))
       .then((response: CafetchResponse) => {
-        this.response = this.postSend(response) || response;
+        this.response = response;
         this.channel.data.forEach((cb) => cb(response));
         this.ts = Date.now();
       })
@@ -211,21 +235,15 @@ class Cafetch {
   #ricId = -1;
   #state = "idle";
   #executors = new Map();
-  #pre: PreFn[] = [];
-  #post: PostFn[] = [];
-
-  ext(part: 'pre' | 'post', cb: PreFn | PostFn) {
-    if (part === 'pre') this.#pre.push(cb as PreFn);
-    else this.#post.push(cb as PostFn);
-  }
 
   request(url: string, options?: CafetchOptions): Exector {
     const method = (options?.method || 'GET').toUpperCase();
     let {
-      postSend,
-      preSend,
+      post,
+      pre,
       key,
       fetchPolicy,
+      validate,
       ...fetchOptions
     } = (options || {});
     // cache-first | cache-only | cache-and-network | network-only
@@ -240,16 +258,11 @@ class Cafetch {
       executor = new Exector({
         key,
         fetchPolicy,
-        postSend: this.postHandleBuilder(postSend),
-        request: this.fetchBuilder(url, fetchOptions as CafetchRequestOptions, preSend),
+        postSend: this.postHandleBuilder(post, validate),
+        request: this.fetchBuilder(url, fetchOptions as CafetchRequestOptions, pre, validate),
       });
       executor.refetch = this.refetchBuilder(key, executor);
-      this.#executors.set(key, executor);
-    }
-
-    if (method !== 'GET') {
-      executor.postSend = this.postHandleBuilder(postSend);
-      executor.request = this.fetchBuilder(url, fetchOptions as CafetchRequestOptions, preSend);
+      if (fetchPolicy !== 'network-only') this.#executors.set(key, executor);
     }
 
     switch (fetchPolicy) {
@@ -314,16 +327,49 @@ class Cafetch {
     };
   }
 
-  fetchBuilder = (url: string, options: CafetchRequestOptions, preSend?: PreFn) => {
-    let fetchOptions = this.#pre.concat(preSend || []).reduce((fetchOptions, fn) => fn(fetchOptions) || options, options);
-    return () => this.#fetch(url, fetchOptions);
-  }
+  fetchBuilder = (url: string, options: CafetchRequestOptions, pre?: PreFn, validate?: Validate) => {
+    return async () => {
+      let fetchOptions = options;
+      for (let fn of [this.preValidate.bind(this, validate) as PreFn].concat(globalState.pre).concat(pre || [])) {
+        fetchOptions = await Promise.resolve(fn(fetchOptions) || fetchOptions)
+      }
+      return this.#fetch(url, fetchOptions);
+    };
+  };
 
-  postHandleBuilder = (post?: PostFn) => {
-    return (response: CafetchResponse) => {
-      this.#post.concat(post || []).reduce((response, fn) => fn(response) || response, response)
+  postHandleBuilder = (post?: PostFn, validate?: Validate) => {
+    return async (response: CafetchResponse) => {
+      let ret = response;
+      for (let fn of globalState.post.concat(post || []).concat(this.postValidate.bind(this, validate))) {
+        ret = await Promise.resolve(fn(response) || response);
+      }
+      return ret;
     }
   }
+
+  async preValidate(validate: Validate | undefined, options: CafetchRequestOptions): Promise<CafetchRequestOptions> {
+    if (!validate) return options;
+    if (options.body && validate.body) {
+      if (validate.body.validateAsync) {
+        await validate.body.validateAsync(options.body);
+      } else {
+        await Promise.resolve(validate.body.validate(options.body));
+      }
+    }
+    return options;
+  };
+
+  async postValidate(validate: Validate | undefined, response: CafetchResponse): Promise<CafetchResponse> {
+    if (!validate) return response;
+    if (validate.response && response.body) {
+      if (validate.response.validateAsync) {
+        await validate.response.validateAsync(response.body);
+      } else {
+        await Promise.resolve(validate.body.validate(response.body));
+      }
+    }
+    return response;
+  };
 }
 
 globalState.instance = new Cafetch();
@@ -340,7 +386,8 @@ function registerEndpoint(endpointConfig: Endpoint | Endpoint[]) {
 }
 
 function ext(part: 'pre' | 'post', cb: PreFn | PostFn) {
-  globalState?.instance?.ext(part, cb);
+  if (part === 'pre') globalState.pre.push(cb as PreFn);
+  else globalState.post.push(cb as PostFn);
 }
 
 function request(url: string | Endpoint, options?: CafetchOptions) {
@@ -370,6 +417,8 @@ export {
   Cafetch,
   request,
   registerEndpoint,
-  customFetch as fetch
+  customFetch as fetch,
+  CafetchError,
+  globalState
 };
 export const getInstance = () => globalState.instance;
