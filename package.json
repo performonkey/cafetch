@@ -2,7 +2,8 @@
   "name": "cafetch",
   "version": "0.1.0",
   "description": "fetch with cache",
-  "main": "dist/cafetech.js",
+  "type": "module",
+  "main": "dist/cafetch.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/performonkey/cafetch.git"
