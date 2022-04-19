@@ -1,10 +1,9 @@
 //#region types
 type FetchPolicy = 'network-only' | 'cache-first' | 'cache-only' | 'cache-and-network';
 type Request = () => Promise<any>;
-type PostSend = (response: CafetchResponse) => Promise<CafetchResponse>;
 type ExectorEvent = 'data' | 'error';
 type PreFn = (options: CafetchRequestOptions) => Promise<CafetchRequestOptions> | CafetchRequestOptions;
-type PostFn = (response: CafetchResponse) => Promise<CafetchResponse> | CafetchResponse;
+type PostFn = (response: CafetchResponse, executor: Executor) => Promise<CafetchResponse> | CafetchResponse;
 type Validator = {
   validate: (value: any, options?: { [k: string]: any }) => boolean,
   validateSync?: (value: any, options?: { [k: string]: any }) => boolean,
@@ -43,7 +42,7 @@ interface CafetchOptions extends CafetchRequestOptions {
 
 interface CafetchQueue {
   key: string;
-  executor: Exector;
+  executor: Executor;
   ts: number;
 }
 
@@ -153,7 +152,7 @@ function customFetch(url: string, options: CafetchRequestOptions): Promise<Cafet
     });
 }
 
-class Exector {
+class Executor {
   key: string;
   fetchPolicy = 'network-only';
   channel: {
@@ -169,14 +168,14 @@ class Exector {
   state = 'idle'; // running | idle | success | error
   ts = 0;
   refetch = () => {};
-  postSend: PostSend = (x: CafetchResponse) => Promise.resolve(x);
+  postSend: PostFn = (x: CafetchResponse) => Promise.resolve(x);
 
   constructor({
     key,
     request,
     postSend,
     fetchPolicy = 'network-only',
-  }: { key: string, request: Request, postSend: PostSend, fetchPolicy: FetchPolicy }) {
+  }: { key: string, request: Request, postSend: PostFn, fetchPolicy: FetchPolicy }) {
     this.key = key;
     this.request = request;
     this.fetchPolicy = fetchPolicy;
@@ -207,7 +206,7 @@ class Exector {
     this.state = 'running';
 
     this.request()
-      .then(response => this.postSend(response))
+      .then(response => this.postSend(response, this))
       .then((response: CafetchResponse) => {
         this.response = response;
         this.channel.data.forEach((cb) => cb(response));
@@ -236,7 +235,7 @@ class Cafetch {
   #state = "idle";
   #executors = new Map();
 
-  request(url: string, options?: CafetchOptions): Exector {
+  request(url: string, options?: CafetchOptions): Executor {
     const method = (options?.method || 'GET').toUpperCase();
     let {
       post,
@@ -255,7 +254,7 @@ class Cafetch {
     fetchOptions = { ...fetchOptions, method };
     let executor = this.#executors.get(key);
     if (!executor) {
-      executor = new Exector({
+      executor = new Executor({
         key,
         fetchPolicy,
         postSend: this.postHandleBuilder(post, validate),
@@ -316,7 +315,7 @@ class Cafetch {
     this.#ricId = requestIdleCallback(this.execRequest);
   }
 
-  refetchBuilder(key: string, executor: Exector) {
+  refetchBuilder(key: string, executor: Executor) {
     return () => {
       this.#queue.push({
         key,
@@ -338,10 +337,10 @@ class Cafetch {
   };
 
   postHandleBuilder = (post?: PostFn, validate?: Validate) => {
-    return async (response: CafetchResponse) => {
+    return async (response: CafetchResponse, executor: Executor) => {
       let ret = response;
       for (let fn of globalState.post.concat(post || []).concat(this.postValidate.bind(this, validate))) {
-        ret = await Promise.resolve(fn(response) || response);
+        ret = await Promise.resolve(fn(response, executor) || response);
       }
       return ret;
     }
