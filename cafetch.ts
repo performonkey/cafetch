@@ -1,7 +1,7 @@
 //#region types
 type FetchPolicy = 'network-only' | 'cache-first' | 'cache-only' | 'cache-and-network';
 type Request = () => Promise<any>;
-type ExectorEvent = 'data' | 'error';
+type ExectorEvent = 'request' | 'data' | 'error';
 type PreFn = (options: CafetchRequestOptions) => Promise<CafetchRequestOptions> | CafetchRequestOptions;
 type PostFn = (response: CafetchResponse, executor: Executor) => Promise<CafetchResponse> | CafetchResponse;
 type Validator = {
@@ -156,16 +156,18 @@ class Executor {
   key: string;
   fetchPolicy = 'network-only';
   channel: {
+    request: (() => any)[],
     data: ((response: CafetchResponse) => any)[],
     error: ((error: Error) => any)[]
   } = {
+    request: [],
     data: [],
     error: [],
   };
   request: Request;
   response?: CafetchResponse;
   error = null;
-  state = 'idle'; // running | idle | success | error
+  state = 'idle'; // running | idle
   ts = 0;
   refetch = () => {};
   postSend: PostFn = (x: CafetchResponse) => Promise.resolve(x);
@@ -182,14 +184,22 @@ class Executor {
     this.postSend = postSend;
   }
 
-  on = (event: ExectorEvent, cb: (arg: CafetchResponse | Error) => any) => {
-    if (event === "data" ) {
-      if (this.response && this.fetchPolicy !== 'network-only') {
-        cb(this.response);
-      }
-      this.channel.data.push(cb);
-    } else {
-      this.channel.error.push(cb);
+  on = (event: ExectorEvent, cb: (arg: CafetchResponse | Error | void) => any) => {
+    const channel = this.channel[event];
+    if (channel.includes(cb)) return this;
+
+    switch (event) {
+      case "data":
+        if (this.response && this.fetchPolicy !== 'network-only') {
+          cb(this.response);
+        }
+        channel.push(cb);
+        break;
+      case "request":
+        channel.push(cb);
+        break;
+      default:
+        channel.push(cb);
     }
 
     return this;
@@ -203,7 +213,10 @@ class Executor {
 
   send() {
     if (this.state !== 'idle') return;
+
     this.state = 'running';
+    this.channel.request.forEach(cb => cb());
+    this.error = null;
 
     this.request()
       .then(response => this.postSend(response, this))
