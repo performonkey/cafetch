@@ -221,16 +221,15 @@ class Executor {
     this.request()
       .then(response => this.postSend(response, this))
       .then((response: CafetchResponse) => {
+        this.state = 'idle';
         this.response = response;
-        this.channel.data.forEach((cb) => cb(response));
         this.ts = Date.now();
+        this.channel.data.forEach((cb) => cb(response));
       })
       .catch((error) => {
+        this.state = 'idle';
         this.error = error;
         this.channel.error.forEach((cb) => cb(error));
-      })
-      .finally(() => {
-        this.state = 'idle';
       });
   }
 }
