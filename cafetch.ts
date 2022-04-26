@@ -261,9 +261,10 @@ class Cafetch {
     } = (options || {});
 
     if (query) {
-      const urlObj = new URL(url);
+      const startWithSlash = url[0] === '/';
+      const urlObj = new URL(startWithSlash ? `http://example.com${url}` : url);
       urlObj.search = new URLSearchParams(query).toString();
-      url = urlObj.toString();
+      url = startWithSlash ? `${urlObj.pathname}${urlObj.search}` : urlObj.toString();
     }
 
     // cache-first | cache-only | cache-and-network | network-only
