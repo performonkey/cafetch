@@ -38,6 +38,7 @@ interface CafetchOptions extends CafetchRequestOptions {
   post?: PostFn;
   pre?: PreFn;
   validate?: Validate;
+  query?: string | URLSearchParams | string[][] | Record<string, string> | undefined;
 }
 
 interface CafetchQueue {
@@ -255,8 +256,16 @@ class Cafetch {
       key,
       fetchPolicy,
       validate,
+      query,
       ...fetchOptions
     } = (options || {});
+
+    if (query) {
+      const urlObj = new URL(url);
+      urlObj.search = new URLSearchParams(query).toString();
+      url = urlObj.toString();
+    }
+
     // cache-first | cache-only | cache-and-network | network-only
     if (!fetchPolicy) {
       fetchPolicy = method === 'GET' ? 'cache-first' : "network-only";
