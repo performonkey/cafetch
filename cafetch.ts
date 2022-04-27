@@ -362,7 +362,7 @@ class Cafetch {
     return async (response: CafetchResponse, executor: Executor) => {
       let ret = response;
       for (let fn of globalState.post.concat(post || []).concat(this.postValidate.bind(this, validate))) {
-        ret = await Promise.resolve(fn(response, executor) || response);
+        ret = (await Promise.resolve(fn(ret, executor)) || ret);
       }
       return ret;
     }
