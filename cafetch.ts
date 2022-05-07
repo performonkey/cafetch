@@ -220,7 +220,11 @@ class Executor {
     this.error = null;
 
     this.request()
-      .then(response => this.postSend(response, this))
+      .then((response: CafetchResponse) => this.postSend(response, this))
+      .catch((error: CafetchError) =>
+        Promise.resolve(this.postSend(<CafetchResponse>error, this))
+          .finally(() => Promise.reject(error))
+      )
       .then((response: CafetchResponse) => {
         this.state = 'idle';
         this.response = response;
