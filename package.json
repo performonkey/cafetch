@@ -1,6 +1,6 @@
 {
   "name": "cafetch",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "fetch with cache",
   "type": "module",
   "main": "dist/cafetch.js",
