@@ -83,9 +83,9 @@ class CafetchError extends Error {
 
   constructor(message: string, addition: { cause?: Error, [k: string]: any }) {
     super(message);
+    Object.assign(this, addition);
     this.name = 'CafetchError';
     this.message = message;
-    Object.assign(this, addition);
     // Error.captureStackTrace(this, this.constructor);
   }
 }
@@ -220,10 +220,14 @@ class Executor {
     this.error = null;
 
     this.request()
-      .then((response: CafetchResponse) => this.postSend(response, this))
+      .then((response: CafetchResponse) =>
+        Promise.resolve(this.postSend(response, this))
+          .catch(err => Promise.reject(new CafetchError(typeof err === 'string' ? err : err?.message, response)))
+      )
       .catch((error: CafetchError) =>
         Promise.resolve(this.postSend(<CafetchResponse>error, this))
-          .finally(() => Promise.reject(error))
+          .then(() => Promise.reject(error))
+          .catch(err => Promise.reject(new CafetchError(typeof err === 'string' ? err : err?.message, error)))
       )
       .then((response: CafetchResponse) => {
         this.state = 'idle';
@@ -267,7 +271,8 @@ class Cafetch {
     if (query) {
       const startWithSlash = url[0] === '/';
       const urlObj = new URL(startWithSlash ? `http://example.com${url}` : url);
-      urlObj.search = new URLSearchParams(query).toString();
+      const search: { [k: string]: string } = Object.fromEntries(urlObj.searchParams.entries());
+      urlObj.search = new URLSearchParams({ ...search, ...(query as { [k: string]: string }) }).toString();
       url = startWithSlash ? `${urlObj.pathname}${urlObj.search}` : urlObj.toString();
     }
 
