@@ -39,6 +39,7 @@ interface CafetchOptions extends CafetchRequestOptions {
   pre?: PreFn;
   validate?: Validate;
   query?: string | URLSearchParams | string[][] | Record<string, string> | undefined;
+  params?: { [k: string]: string };
 }
 
 interface CafetchQueue {
@@ -265,9 +266,15 @@ class Cafetch {
       fetchPolicy,
       validate,
       query,
+      params,
       ...fetchOptions
     } = (options || {});
 
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        url = url.replace(':' + key, value);
+      });
+    }
     if (query) {
       const startWithSlash = url[0] === '/';
       const urlObj = new URL(startWithSlash ? `http://example.com${url}` : url);
