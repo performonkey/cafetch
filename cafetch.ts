@@ -54,11 +54,6 @@ interface Endpoint extends CafetchOptions {
 }
 //#endregion
 
-if (typeof requestIdleCallback === 'undefined') {
-  globalThis.requestIdleCallback = (fn) => setTimeout(fn, 4);
-  globalThis.cancelIdleCallback = (fn) => clearTimeout(fn);
-}
-
 const globalState: {
   instance?: Cafetch,
   endpoint: { [k: string]: Endpoint },
@@ -253,7 +248,7 @@ class Cafetch {
 
   #fetch = customFetch;
   #queue: CafetchQueue[] = [];
-  #ricId = -1;
+  #stId = -1;
   #state = "idle";
   #executors = new Map();
 
@@ -349,8 +344,8 @@ class Cafetch {
   }
 
   scheduleRequest() {
-    cancelIdleCallback(this.#ricId);
-    this.#ricId = requestIdleCallback(this.execRequest);
+    window.clearTimeout(this.#stId);
+    this.#stId = window.setTimeout(this.execRequest, 4);
   }
 
   refetchBuilder(key: string, executor: Executor) {
