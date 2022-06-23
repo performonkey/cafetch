@@ -22,7 +22,9 @@ interface CafetchRequestOptions extends  Omit<RequestInit, 'body'> {
 }
 
 interface Validate {
-  body<T>(x: T): T,
+  request: {
+    body<T>(x: T): T,
+  },
   response<T>(x: T): T,
 }
 
@@ -395,8 +397,8 @@ class Cafetch {
 
   async preValidate(validate: Validate | undefined, options: CafetchRequestOptions): Promise<CafetchRequestOptions> {
     if (!validate) return options;
-    if (options.body && validate.body) {
-      options.body = await Promise.resolve(validate.body(options.body));
+    if (options.body && validate?.request?.body.query) {
+      options.body = await Promise.resolve(validate.request.body(options.body));
     }
     return options;
   };
