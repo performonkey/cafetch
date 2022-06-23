@@ -4,11 +4,6 @@ type Request = () => Promise<any>;
 type ExectorEvent = 'request' | 'data' | 'error';
 type PreFn = (options: CafetchRequestOptions) => Promise<CafetchRequestOptions> | CafetchRequestOptions;
 type PostFn = (response: CafetchResponse, executor: Executor) => Promise<CafetchResponse> | CafetchResponse;
-type Validator = {
-  validate: (value: any, options?: { [k: string]: any }) => boolean,
-  validateSync?: (value: any, options?: { [k: string]: any }) => boolean,
-  [k: string]: any
-};
 
 interface CafetchResponse {
   readonly headers: Headers;
@@ -27,8 +22,8 @@ interface CafetchRequestOptions extends  Omit<RequestInit, 'body'> {
 }
 
 interface Validate {
-  body: Validator,
-  response: Validator,
+  body<T>(x: T): T,
+  response<T>(x: T): T,
 }
 
 interface CafetchOptions extends CafetchRequestOptions {
@@ -51,6 +46,15 @@ interface CafetchQueue {
 interface Endpoint extends CafetchOptions {
   endpoint: string;
   url: string;
+}
+
+interface EventHandleOptions {
+  once: boolean;
+}
+
+interface EventListener<T> {
+  fn: (arg: T) => any,
+  once: boolean
 }
 //#endregion
 
@@ -149,13 +153,23 @@ function customFetch(url: string, options: CafetchRequestOptions): Promise<Cafet
     });
 }
 
+function callEventListeners(listeners: EventListener<any>[], arg?: any) {
+  for (let i = listeners.length - 1; i >= 0; i--) {
+    const { fn, once } = listeners[i];
+    fn(arg);
+    if (once) {
+      listeners.splice(i, 1);
+    }
+  }
+}
+
 class Executor {
   key: string;
   fetchPolicy = 'network-only';
   channel: {
-    request: (() => any)[],
-    data: ((response: CafetchResponse) => any)[],
-    error: ((error: Error) => any)[]
+    request: EventListener<undefined>[],
+    data: EventListener<CafetchResponse>[],
+    error: EventListener<Error>[]
   } = {
     request: [],
     data: [],
@@ -181,22 +195,22 @@ class Executor {
     this.postSend = postSend;
   }
 
-  on = (event: ExectorEvent, cb: (arg: CafetchResponse | Error | void) => any) => {
+  on = (event: ExectorEvent, cb: (arg: CafetchResponse | Error | void) => any, options: EventHandleOptions = { once: false }) => {
     const channel = this.channel[event];
-    if (channel.includes(cb)) return this;
+    if (channel.some(x => x.fn === cb)) return this;
 
     switch (event) {
       case "data":
         if (this.response && this.fetchPolicy !== 'network-only') {
           cb(this.response);
         }
-        channel.push(cb);
+        channel.push({ once: options.once, fn: cb });
         break;
       case "request":
-        channel.push(cb);
+        channel.push({ once: options.once, fn: cb });
         break;
       default:
-        channel.push(cb);
+        channel.push({ once: options.once, fn: cb });
     }
 
     return this;
@@ -204,7 +218,7 @@ class Executor {
 
   off = (event: ExectorEvent, cb: () => any) => {
     const channel = this.channel[event];
-    channel.splice(channel.indexOf(cb), 1);
+    channel.splice(channel.findIndex(x => x.fn === cb), 1);
     return this;
   }
 
@@ -212,7 +226,7 @@ class Executor {
     if (this.state !== 'idle') return;
 
     this.state = 'running';
-    this.channel.request.forEach(cb => cb());
+    callEventListeners(this.channel.request);
     this.error = null;
 
     this.request()
@@ -229,12 +243,12 @@ class Executor {
         this.state = 'idle';
         this.response = response;
         this.ts = Date.now();
-        this.channel.data.forEach((cb) => cb(response));
+        callEventListeners(this.channel.data, response);
       })
       .catch((error) => {
         this.state = 'idle';
         this.error = error;
-        this.channel.error.forEach((cb) => cb(error));
+        callEventListeners(this.channel.error, error);
       });
   }
 }
@@ -382,11 +396,7 @@ class Cafetch {
   async preValidate(validate: Validate | undefined, options: CafetchRequestOptions): Promise<CafetchRequestOptions> {
     if (!validate) return options;
     if (options.body && validate.body) {
-      if (validate.body.validateAsync) {
-        await validate.body.validateAsync(options.body);
-      } else {
-        await Promise.resolve(validate.body.validate(options.body));
-      }
+      options.body = await Promise.resolve(validate.body(options.body));
     }
     return options;
   };
@@ -394,14 +404,14 @@ class Cafetch {
   async postValidate(validate: Validate | undefined, response: CafetchResponse): Promise<CafetchResponse> {
     if (!validate) return response;
     if (validate.response && response.body) {
-      if (validate.response.validateAsync) {
-        await validate.response.validateAsync(response.body);
-      } else {
-        await Promise.resolve(validate.body.validate(response.body));
-      }
+      response.body = await Promise.resolve(validate.response(response.body));
     }
     return response;
   };
+
+  clear() {
+    this.#executors = new Map();
+  }
 }
 
 globalState.instance = new Cafetch();
