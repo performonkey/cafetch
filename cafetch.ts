@@ -397,7 +397,7 @@ class Cafetch {
 
   async preValidate(validate: Validate | undefined, options: CafetchRequestOptions): Promise<CafetchRequestOptions> {
     if (!validate) return options;
-    if (options.body && validate?.request?.body.query) {
+    if (options.body && validate?.request?.body) {
       options.body = await Promise.resolve(validate.request.body(options.body));
     }
     return options;
