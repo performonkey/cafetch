@@ -459,8 +459,16 @@ export {
   Cafetch,
   request,
   registerEndpoint,
-  customFetch as fetch,
   CafetchError,
   globalState
 };
 export const getInstance = () => globalState.instance;
+
+function requestPromise(url: string | Endpoint, options?: CafetchOptions) {
+  return new Promise((resolve, reject) => {
+    const req = request(url, options);
+    if (!req) return resolve(null);
+    req.on('data', resolve, { once: true }).on('error', reject, { once: true })
+  });
+}
+export { requestPromise as fetch };
